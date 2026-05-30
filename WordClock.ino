@@ -3,7 +3,7 @@
 //  Font: DejaVu Sans Mono Bold 9pt (auto-generated WordClockFont.h)
 //  Features:
 //    • Auto UK BST / GMT  (no manual change ever needed)
-//    • Nighttime blackout  00:00 – 07:00
+//    • Nighttime blackout  22:00 – 07:00
 //    • Buzzer / vibrate disabled  (vibrateOClock = false)
 //    • gmtOffset = 0  (RTC stores UTC, localHour() handles offset)
 //    • Battery icon  (bottom-right corner, white on black)
@@ -19,7 +19,7 @@ RTC_DATA_ATTR bool    displaySleeping = false;
 RTC_DATA_ATTR uint8_t lastHour        = 99;   // 99 → full refresh on first boot
 
 // ── Nighttime blackout window (local time, 24 h) ─────────────
-#define SLEEP_FROM  00    // 00:00 PM  ← only these two lines need changing
+#define SLEEP_FROM   00    // Midnight  ← only these two lines need changing
 #define SLEEP_UNTIL  7    //  7:00 AM
 
 // ── Character grid  (16 cols × 12 rows) ──────────────────────
@@ -35,7 +35,7 @@ static const char GRID[12][17] = {
   "TWONELEVENINESIX",   // row  8
   "SEVENTHREETWELVE",   // row  9
   "FOURXFIVEIGHTEND",   // row 10
-  "XXOCLOCKXAMXPMXX",   // row 11
+  "XXXOCLOCKXAMXPMX",   // row 11  (cols 0-2 = battery zone, suppressed)
 };
 
 // ── Word definition {row, startCol, length} ──────────────────
@@ -69,9 +69,9 @@ static const WD W_MINUTE   = {7,  0, 6};  // singular – no trailing S
 static const WD W_MINUTES  = {7,  0, 7};  // plural
 static const WD W_PAST     = {7,  8, 4};
 static const WD W_TO       = {7, 11, 2};
-static const WD W_AM       = {11, 9, 2};
-static const WD W_PM       = {11,12, 2};
-static const WD W_OCLOCK   = {11, 2, 6};
+static const WD W_AM       = {11,10, 2};
+static const WD W_PM       = {11,13, 2};
+static const WD W_OCLOCK   = {11, 3, 6};
 static const WD HOURS[13]  = {
   {0, 0, 0},       // [0]  unused
   {8,  2, 3},      // [1]  ONE
@@ -234,11 +234,13 @@ void WordClock::markMinuteWords(bool active[12][16], uint8_t n) {
 }
 
 // ── Grid renderer ─────────────────────────────────────────────
-//  Active cells  → glyph drawn twice: once normally, once +1 px to
-//                  the right. The second pass thickens each stroke
-//                  by one pixel, giving bold weight on e-paper without
-//                  needing a separate heavy font file.
-//  Inactive cells → single centre pixel (dot-matrix grid hint)
+//  All cells      → glyph drawn twice (normal + 1 px right) for
+//                   thicker strokes on e-paper.
+//  Active cells   → solid white, no further processing.
+//  Inactive cells → 25 % visible: after bold draw, every pixel where
+//                   NOT (dx even AND dy even) is blacked out, leaving
+//                   one white pixel per 2×2 block as the dither grain.
+//  Battery zone   → cols 0-2 of row 11 suppressed entirely (pure black).
 void WordClock::drawGrid(bool active[12][16]) {
   display.setFont(&WordClockFont);
   display.setTextWrap(false);
@@ -246,35 +248,41 @@ void WordClock::drawGrid(bool active[12][16]) {
 
   for (uint8_t r = 0; r < 12; r++) {
     for (uint8_t c = 0; c < 16; c++) {
+
+      // Battery zone — leave pure black for the icon
+      if (r == 11 && c <= 2) continue;
+
       const int16_t px = MARGIN + c * CW;
       const int16_t py = MARGIN + r * CH;
 
-      if (active[r][c]) {
-        // First pass — normal position
-        display.setCursor(px, py + CH);
-        display.print(GRID[r][c]);
-        // Second pass — 1 px right → thicker strokes
-        display.setCursor(px + 1, py + CH);
-        display.print(GRID[r][c]);
-      } else {
-        // Single pixel at cell centre — subtle dot grid
-        display.drawPixel(px + CW / 2, py + CH / 2, GxEPD_WHITE);
+      // Bold draw: two passes for every letter
+      display.setCursor(px,     py + CH); display.print(GRID[r][c]);
+      display.setCursor(px + 1, py + CH); display.print(GRID[r][c]);
+
+      if (!active[r][c]) {
+        // 25 % dither — black out 75 % of cell pixels
+        for (uint8_t dy = 0; dy < CH; dy++)
+          for (uint8_t dx = 0; dx < CW; dx++)
+            if (!(dx % 2 == 0 && dy % 2 == 0))
+              display.drawPixel(px + dx, py + dy, GxEPD_BLACK);
       }
     }
   }
   display.setFont(NULL);
 }
 
-// ── Battery icon (white on black, bottom-right corner) ────────
+// ── Battery icon (bottom-left, within suppressed cols 0-2 zone) ──
+//  Body 22×12 px  nub 3×6 px  total 25 px — sits inside the 36 px
+//  (3 × 12) cleared zone leaving 11 px clear to the right of the nub.
 void WordClock::drawBattery() {
   float v   = getBatteryVoltage();
   int   pct = (int)(100.0f * (v - 3.3f) / (4.2f - 3.3f));
   pct = (pct > 100) ? 100 : (pct < 0) ? 0 : pct;
 
-  const int16_t BX = 168, BY = 183;
-  display.drawRect(BX,    BY,     26, 12, GxEPD_WHITE);   // body
-  display.fillRect(BX+26, BY + 3,  3,  6, GxEPD_WHITE);   // nub
-  int fw = (22 * pct) / 100;
+  const int16_t BX = 4, BY = 183;
+  display.drawRect(BX,    BY,     22, 12, GxEPD_WHITE);   // body 22×12
+  display.fillRect(BX+22, BY + 3,  3,  6, GxEPD_WHITE);   // nub 3×6
+  int fw = (18 * pct) / 100;
   if (fw > 0)
     display.fillRect(BX + 2, BY + 2, fw, 8, GxEPD_WHITE);
 }
